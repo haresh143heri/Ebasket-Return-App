@@ -61,7 +61,6 @@ def delete_by_date_sheet(tab_name, date_str):
 # --- 3. Page Config & COOKIE MANAGER ---
 st.set_page_config(page_title="Ebasket Cloud Dashboard", layout="wide")
 
-# Cookie Manager Initialize
 def get_manager():
     return stx.CookieManager()
 
@@ -70,39 +69,43 @@ cookie_manager = get_manager()
 ADMIN_USER = "kushal@gmail.com"
 ADMIN_PASS = "AdminKushal@721"
 
-# --- LOGIN LOGIC WITH COOKIES ---
-# 1. Check Session State
+# --- LOGIN LOGIC WITH COOKIES & ENTER KEY ---
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
 
-# 2. Check Cookie (If not logged in via session)
+# Check Cookie
 if not st.session_state['logged_in']:
-    cookie_val = cookie_manager.get(cookie="ebasket_auth_token")
-    if cookie_val == "verified_user":
-        st.session_state['logged_in'] = True
+    try:
+        cookie_val = cookie_manager.get(cookie="ebasket_auth_token")
+        if cookie_val == "verified_user":
+            st.session_state['logged_in'] = True
+    except:
+        pass
 
-# 3. Show Login Form only if still not logged in
+# Show Login Form
 if not st.session_state['logged_in']:
     st.title("🔒 Ebasket Cloud Login")
-    u = st.text_input("Email")
-    p = st.text_input("Password", type="password")
     
-    if st.button("Login"):
+    # FORM: This allows pressing 'Enter' to submit
+    with st.form("login_form"):
+        u = st.text_input("Email")
+        p = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Login")
+    
+    if submitted:
         if u == ADMIN_USER and p == ADMIN_PASS:
-            # Set Cookie (No expiry = Session Cookie, lasts until browser close)
             cookie_manager.set("ebasket_auth_token", "verified_user")
             st.session_state['logged_in'] = True
-            st.success("Logged in! Reloading...")
+            st.success("Logged in! Redirecting...")
             time.sleep(1)
             st.rerun()
         else:
             st.error("Invalid Credentials")
-    st.stop() # Stop here if not logged in
+    st.stop()
 
-# --- 4. Main App (Only runs if Logged In) ---
+# --- 4. Main App ---
 st.sidebar.title("🚀 Ebasket Cloud Panel")
 
-# Logout Button (Deletes Cookie)
 if st.sidebar.button("Logout"):
     cookie_manager.delete("ebasket_auth_token")
     st.session_state['logged_in'] = False
@@ -154,7 +157,7 @@ if st.sidebar.button("☁️ Save to Google Sheet"):
             st.cache_data.clear()
             st.rerun()
         else:
-            st.warning("Please upload files first.")
+            st.warning("Upload files first.")
 
 # --- 5. Data Loading ---
 @st.cache_data(ttl=60)
@@ -209,7 +212,6 @@ with t_daily:
     m1.metric("Orders", len(daily_orders))
     m2.metric("Returns", len(daily_returns))
     m3.metric("Missing", len(daily_missing))
-    
     if not daily_returns.empty: st.dataframe(daily_returns[['RETURN ORDER NUMBER', 'SELLER SKU', 'Status', 'Category']], use_container_width=True)
 
 with t1:
