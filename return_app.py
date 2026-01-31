@@ -3,6 +3,8 @@ import pandas as pd
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
+import extra_streamlit_components as stx
+import time
 
 # --- 1. Setup & Auth ---
 SHEET_NAME = "Ebasket_Database"
@@ -11,12 +13,10 @@ CREDS_FILE = "credentials.json"
 def get_connection():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     try:
-        # Local
         creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, scope)
         client = gspread.authorize(creds)
         return client.open(SHEET_NAME)
     except:
-        # Streamlit Cloud
         try:
             creds_dict = dict(st.secrets["gcp_service_account"])
             creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
@@ -40,9 +40,7 @@ def load_from_sheet(tab_name):
     sh = get_connection()
     worksheet = sh.worksheet(tab_name)
     data = worksheet.get_all_records()
-    # If empty, return empty DF
-    if not data:
-        return pd.DataFrame()
+    if not data: return pd.DataFrame()
     return pd.DataFrame(data)
 
 def delete_by_date_sheet(tab_name, date_str):
@@ -60,28 +58,53 @@ def delete_by_date_sheet(tab_name, date_str):
         else:
             st.warning("No data found for that date.")
 
-# --- 3. Page Config & Login ---
+# --- 3. Page Config & COOKIE MANAGER ---
 st.set_page_config(page_title="Ebasket Cloud Dashboard", layout="wide")
+
+# Cookie Manager Initialize
+def get_manager():
+    return stx.CookieManager()
+
+cookie_manager = get_manager()
 
 ADMIN_USER = "kushal@gmail.com"
 ADMIN_PASS = "AdminKushal@721"
 
-if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
+# --- LOGIN LOGIC WITH COOKIES ---
+# 1. Check Session State
+if 'logged_in' not in st.session_state:
+    st.session_state['logged_in'] = False
 
+# 2. Check Cookie (If not logged in via session)
+if not st.session_state['logged_in']:
+    cookie_val = cookie_manager.get(cookie="ebasket_auth_token")
+    if cookie_val == "verified_user":
+        st.session_state['logged_in'] = True
+
+# 3. Show Login Form only if still not logged in
 if not st.session_state['logged_in']:
     st.title("🔒 Ebasket Cloud Login")
     u = st.text_input("Email")
     p = st.text_input("Password", type="password")
+    
     if st.button("Login"):
         if u == ADMIN_USER and p == ADMIN_PASS:
+            # Set Cookie (No expiry = Session Cookie, lasts until browser close)
+            cookie_manager.set("ebasket_auth_token", "verified_user")
             st.session_state['logged_in'] = True
+            st.success("Logged in! Reloading...")
+            time.sleep(1)
             st.rerun()
-        else: st.error("Invalid Credentials")
-    st.stop()
+        else:
+            st.error("Invalid Credentials")
+    st.stop() # Stop here if not logged in
 
-# --- 4. Main App ---
+# --- 4. Main App (Only runs if Logged In) ---
 st.sidebar.title("🚀 Ebasket Cloud Panel")
+
+# Logout Button (Deletes Cookie)
 if st.sidebar.button("Logout"):
+    cookie_manager.delete("ebasket_auth_token")
     st.session_state['logged_in'] = False
     st.rerun()
 
@@ -165,104 +188,70 @@ if not rtvs.empty:
     rtv_all = pd.merge(rtvs, pm, on='SELLER SKU', how='left')
     rtv_all['Category'] = rtv_all['Article Name'].apply(get_category)
 else:
-    # Initialize Empty DF with correct columns to prevent KeyError
     rtv_all = pd.DataFrame(columns=['Status', 'Date', 'Category', 'SELLER SKU', 'RETURN ORDER NUMBER', 'Return AWB No', 'Cust Order No', 'Return Created Date'])
 
 # --- TABS ---
 st.title("📊 Ebasket Live Dashboard")
 t_daily, t1, t2, t3, t4, t5 = st.tabs(["📅 Daily Report", "📆 Monthly Trend", "📊 Category Analysis", "🚨 Missing List", "📦 SKU Report", "🗂️ Data Management"])
 
-# 1. Daily Report (FIXED)
 with t_daily:
     st.header("Daily Report")
     c1, c2 = st.columns([1,3])
     with c1: selected_date = st.date_input("Select Date", datetime.now())
-    
-    # Safe Filtering
     daily_orders = orders[orders['Date'].dt.date == selected_date] if not orders.empty else pd.DataFrame()
-    
     if not rtv_all.empty:
         daily_returns = rtv_all[rtv_all['Date'].dt.date == selected_date]
-        if not daily_returns.empty:
-            daily_missing = daily_returns[daily_returns['Status'] == 'Missing']
-        else:
-            daily_missing = pd.DataFrame()
+        daily_missing = daily_returns[daily_returns['Status'] == 'Missing'] if not daily_returns.empty else pd.DataFrame()
     else:
-        daily_returns = pd.DataFrame()
-        daily_missing = pd.DataFrame()
+        daily_returns = pd.DataFrame(); daily_missing = pd.DataFrame()
     
     m1, m2, m3 = st.columns(3)
     m1.metric("Orders", len(daily_orders))
     m2.metric("Returns", len(daily_returns))
     m3.metric("Missing", len(daily_missing))
     
-    if not daily_returns.empty:
-        st.dataframe(daily_returns[['RETURN ORDER NUMBER', 'SELLER SKU', 'Status', 'Category']], use_container_width=True)
+    if not daily_returns.empty: st.dataframe(daily_returns[['RETURN ORDER NUMBER', 'SELLER SKU', 'Status', 'Category']], use_container_width=True)
 
-# 2. Monthly Trend
 with t1:
     if not rtvs.empty or not orders.empty:
         curr_year = datetime.now().year
         full_year = pd.DataFrame({'Month': pd.date_range(f'{curr_year}-01-01', f'{curr_year}-12-31', freq='MS').strftime('%Y-%m')})
-        
         o_month = orders.groupby(orders['Date'].dt.strftime('%Y-%m')).size().reset_index(name='Orders') if not orders.empty else pd.DataFrame(columns=['Date','Orders'])
         r_month = rtv_all[rtv_all['Status']=='Matched'].groupby(rtv_all['Date'].dt.strftime('%Y-%m')).size().reset_index(name='Returns') if not rtv_all.empty else pd.DataFrame(columns=['Date','Returns'])
-        
         chart = pd.merge(full_year, o_month, left_on='Month', right_on='Date', how='left')
         chart = pd.merge(chart, r_month, left_on='Month', right_on='Date', how='left').fillna(0)
-        
         st.bar_chart(chart.set_index('Month')[['Orders', 'Returns']])
 
-# 3. Category
 with t2:
     if not orders.empty and not rtv_all.empty:
         c_sales = orders['Seller SKU ID'].apply(lambda x: get_category(pm[pm['SELLER SKU']==x]['Article Name'].values[0] if x in pm['SELLER SKU'].values else '')).value_counts().reset_index(name='Sales').rename(columns={'index':'Category'})
         c_ret = rtv_all[rtv_all['Status']=='Matched']['Category'].value_counts().reset_index(name='Returns').rename(columns={'index':'Category'})
-        
-        # Merge safely
-        # Check if column names are correct (pandas version difference fix)
-        c_sales_cols = c_sales.columns.tolist()
-        c_ret_cols = c_ret.columns.tolist()
-        # Assume col 0 is Category
-        c_sales.columns = ['Category', 'Sales']
-        c_ret.columns = ['Category', 'Returns']
-        
+        c_sales.columns = ['Category', 'Sales']; c_ret.columns = ['Category', 'Returns']
         c_stats = pd.merge(c_ret, c_sales, on='Category', how='left').fillna(0)
         c_stats['Ratio %'] = (c_stats['Returns'] / c_stats['Sales'] * 100).round(2)
         st.dataframe(c_stats, use_container_width=True)
 
-# 4. Missing
 with t3:
-    if not rtv_all.empty:
-        st.dataframe(rtv_all[rtv_all['Status']=='Missing'][['RETURN ORDER NUMBER', 'Return AWB No', 'Cust Order No', 'SELLER SKU', 'Return Created Date']], use_container_width=True)
+    if not rtv_all.empty: st.dataframe(rtv_all[rtv_all['Status']=='Missing'][['RETURN ORDER NUMBER', 'Return AWB No', 'Cust Order No', 'SELLER SKU', 'Return Created Date']], use_container_width=True)
 
-# 5. SKU Report
 with t4:
     if not orders.empty:
         view = st.radio("View", ["Aggregate", "Daily"], horizontal=True)
         if view == "Aggregate":
-            s_sales = orders['Seller SKU ID'].value_counts().reset_index(name='Sales')
-            s_sales.columns = ['SELLER SKU', 'Sales']
+            s_sales = orders['Seller SKU ID'].value_counts().reset_index(name='Sales'); s_sales.columns = ['SELLER SKU', 'Sales']
             s_ret = rtv_all[rtv_all['Status']=='Matched']['SELLER SKU'].value_counts().reset_index(name='Returns') if not rtv_all.empty else pd.DataFrame(columns=['SELLER SKU','Returns'])
             s_ret.columns = ['SELLER SKU', 'Returns']
-            
             s_stats = pd.merge(s_ret, s_sales, on='SELLER SKU', how='left').fillna(0)
             st.dataframe(s_stats.sort_values('Sales', ascending=False), use_container_width=True)
         else:
-            d = st.date_input("Date", datetime.now())
-            do = orders[orders['Date'].dt.date == d]
+            d = st.date_input("Date", datetime.now()); do = orders[orders['Date'].dt.date == d]
             if not do.empty: st.dataframe(do['Seller SKU ID'].value_counts(), use_container_width=True)
 
-# 6. Data Mgmt
 with t5:
     st.header("🗂️ Manage Data")
     tab = st.selectbox("Select Tab", ["scans", "rtv", "orders"])
-    if st.button("🔄 Refresh"):
-        st.cache_data.clear()
-        st.rerun()
-    
+    if st.button("🔄 Refresh"): st.cache_data.clear(); st.rerun()
     date_del = st.text_input("Date to Delete (YYYY-MM-DD)")
     if st.button("Delete"):
         delete_by_date_sheet(tab, date_del)
-        st.cache_data.clear()
-        st.rerun()
+        st.cache_data.clear(); st.rerun()
