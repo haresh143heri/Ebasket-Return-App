@@ -20,19 +20,23 @@ def get_connection():
     except:
         # Cloud Run
         try:
-            creds_dict = dict(st.secrets["gcp_service_account"])
-            creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-            client = gspread.authorize(creds)
-            return client.open(SHEET_NAME)
+            # Check if secrets exist
+            if "gcp_service_account" in st.secrets:
+                creds_dict = dict(st.secrets["gcp_service_account"])
+                creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+                client = gspread.authorize(creds)
+                return client.open(SHEET_NAME)
+            else:
+                st.error("Secrets not found. Please add [gcp_service_account] in Settings.")
+                st.stop()
         except Exception as e:
-            st.error("Connection Error: Secrets બરાબર સેટ નથી. Settings માં જઈને Secrets ઠીક કરો.")
+            st.error(f"Connection Error: {e}. Please check Secrets format.")
             st.stop()
 
 # --- 2. Database Functions ---
 def save_to_sheet(df, tab_name):
     sh = get_connection()
     worksheet = sh.worksheet(tab_name)
-    # Convert all data to string to avoid JSON errors
     data = df.astype(str).values.tolist()
     if not worksheet.get_all_values():
         header = df.columns.tolist()
@@ -41,30 +45,30 @@ def save_to_sheet(df, tab_name):
 
 def load_from_sheet(tab_name):
     sh = get_connection()
-    worksheet = sh.worksheet(tab_name)
-    data = worksheet.get_all_records()
-    if not data: return pd.DataFrame()
-    return pd.DataFrame(data)
+    try:
+        worksheet = sh.worksheet(tab_name)
+        data = worksheet.get_all_records()
+        if not data: return pd.DataFrame()
+        return pd.DataFrame(data)
+    except:
+        return pd.DataFrame() # Return empty if sheet not found
 
 def delete_by_date_sheet(tab_name, date_str):
     df = load_from_sheet(tab_name)
     if not df.empty and 'Upload_Date' in df.columns:
         df['Upload_Date'] = df['Upload_Date'].astype(str)
-        # Keep rows that do NOT match the date
         new_df = df[df['Upload_Date'] != str(date_str)]
-        
         sh = get_connection()
         worksheet = sh.worksheet(tab_name)
         worksheet.clear()
-        
         if not new_df.empty:
             worksheet.update([new_df.columns.values.tolist()] + new_df.values.tolist())
         st.success(f"Deleted data for {date_str}")
     else:
-        st.warning("No data found to delete.")
+        st.warning("No data found or Upload_Date column missing.")
 
 # --- 3. Page Config & Login ---
-st.set_page_config(page_title="Ebasket Cloud Dashboard", layout="wide")
+st.set_page_config(page_title="Ebasket Cloud Panel", layout="wide")
 
 def get_manager(): return stx.CookieManager()
 cookie_manager = get_manager()
@@ -87,9 +91,7 @@ if not st.session_state['logged_in']:
     with st.form("login_form"):
         u = st.text_input("Email")
         p = st.text_input("Password", type="password")
-        submitted = st.form_submit_button("Login")
-        
-        if submitted:
+        if st.form_submit_button("Login"):
             if u == ADMIN_USER and p == ADMIN_PASS:
                 cookie_manager.set("ebasket_auth_token", "verified_user")
                 st.session_state['logged_in'] = True
@@ -139,7 +141,7 @@ if st.sidebar.button("☁️ Save to Google Sheet"):
         else:
             st.warning("Please select files first.")
 
-# --- 5. Data Loading & Logic ---
+# --- 5. Data Loading & Initialization (Fixes KeyError) ---
 @st.cache_data(ttl=60)
 def load_all_data():
     return load_from_sheet('scans'), load_from_sheet('rtv'), load_from_sheet('orders')
@@ -147,27 +149,28 @@ def load_all_data():
 try:
     scans, rtvs, orders = load_all_data()
 except:
-    st.error("Connection Failed. Please check Secrets in Settings.")
+    st.error("Connection Failed. Check Secrets.")
     st.stop()
 
-# Helper for Categories
+# --- Helper: Category ---
 def get_cat(name):
     n = str(name).lower()
     if 'saree' in n: return 'Saree'
     elif 'shirt' in n: return 'Shirt/T-Shirt'
     elif 'kurta' in n: return 'Kurta Set'
     elif 'gown' in n: return 'Gown/Dress'
-    elif 'co-ord' in n: return 'Co-Ord Set'
     return 'Other'
 
-# Prepare Data (Handles Empty Dataframes to avoid KeyError)
+# --- Logic: Handle Empty Data Safely ---
 scan_set = set(scans.iloc[:,0].astype(str).str.strip()) if not scans.empty else set()
 
+# Initialize Orders
 if orders.empty:
     orders = pd.DataFrame(columns=['Open Order Date', 'Seller SKU ID', 'Article Name', 'Date'])
 else:
     orders['Date'] = pd.to_datetime(orders['Open Order Date'], dayfirst=True, errors='coerce')
 
+# Initialize RTVs & Master Data
 if rtvs.empty:
     rtv_all = pd.DataFrame(columns=['Return AWB No', 'Cust Order No', 'RETURN ORDER NUMBER', 'Return Created Date', 'Status', 'Date', 'Category', 'SELLER SKU'])
 else:
@@ -178,7 +181,11 @@ else:
     rtvs['Status'] = rtvs.apply(lambda r: 'Matched' if any(str(r.get(c,'')).strip() in scan_set for c in ['Return AWB No','Cust Order No','RETURN ORDER NUMBER'] if str(r.get(c,'')) != 'nan') else 'Missing', axis=1)
     rtvs['Date'] = pd.to_datetime(rtvs['Return Created Date'].astype(str).str.replace(' IST',''), errors='coerce')
     
-    pm = orders[['Seller SKU ID', 'Article Name']].drop_duplicates().rename(columns={'Seller SKU ID':'SELLER SKU'}) if not orders.empty else pd.DataFrame(columns=['SELLER SKU', 'Article Name'])
+    if not orders.empty:
+        pm = orders[['Seller SKU ID', 'Article Name']].drop_duplicates().rename(columns={'Seller SKU ID':'SELLER SKU'})
+    else:
+        pm = pd.DataFrame(columns=['SELLER SKU', 'Article Name'])
+        
     rtv_all = pd.merge(rtvs, pm, on='SELLER SKU', how='left')
     rtv_all['Category'] = rtv_all['Article Name'].apply(get_cat)
 
@@ -193,6 +200,7 @@ with t_daily:
     d_orders = orders[orders['Date'].dt.date == sel_date] if not orders.empty else pd.DataFrame()
     d_returns = rtv_all[rtv_all['Date'].dt.date == sel_date] if not rtv_all.empty else pd.DataFrame()
     
+    # Check for Status column before filtering
     if not d_returns.empty and 'Status' in d_returns.columns:
         d_missing = d_returns[d_returns['Status'] == 'Missing']
     else:
@@ -205,9 +213,9 @@ with t_daily:
     
     if not d_missing.empty:
         st.subheader("Missing Items List")
-        st.dataframe(d_missing[['RETURN ORDER NUMBER', 'SELLER SKU', 'Category']], use_container_width=True)
+        st.dataframe(d_missing, use_container_width=True)
 
-# 2. Monthly Trend (Fixed 12 Months)
+# 2. Monthly Trend
 with t1:
     st.subheader("Yearly Overview")
     curr_year = datetime.now().year
@@ -228,77 +236,56 @@ with t1:
     
     st.bar_chart(chart.set_index('Month')[['Orders', 'Returns']])
 
-# 3. Category Analysis
+# 3. Category
 with t2:
     if not orders.empty and not rtv_all.empty and 'Category' in rtv_all.columns:
         c_sales = orders['Seller SKU ID'].apply(lambda x: get_cat(pm[pm['SELLER SKU']==x]['Article Name'].values[0] if x in pm['SELLER SKU'].values else '')).value_counts().reset_index(name='Sales')
         c_sales.columns = ['Category', 'Sales']
-        
         c_ret = rtv_all[rtv_all['Status']=='Matched']['Category'].value_counts().reset_index(name='Returns')
         c_ret.columns = ['Category', 'Returns']
-        
         c_stats = pd.merge(c_ret, c_sales, on='Category', how='left').fillna(0)
-        c_stats['Ratio %'] = (c_stats['Returns'] / c_stats['Sales'] * 100).round(2)
         st.dataframe(c_stats, use_container_width=True)
     else:
-        st.info("Not enough data for Category Analysis.")
+        st.info("Upload data for Category Analysis.")
 
 # 4. Missing List
 with t3:
     if not rtv_all.empty and 'Status' in rtv_all.columns:
-        missing = rtv_all[rtv_all['Status']=='Missing']
-        if not missing.empty:
-            st.dataframe(missing[['RETURN ORDER NUMBER', 'Return AWB No', 'SELLER SKU', 'Return Created Date']], use_container_width=True)
-        else:
-            st.success("No missing items found!")
+        st.dataframe(rtv_all[rtv_all['Status']=='Missing'], use_container_width=True)
     else:
-        st.info("No Return data available.")
+        st.info("No missing items.")
 
 # 5. SKU Report
 with t4:
     if not orders.empty:
-        view = st.radio("View Type", ["Aggregate (All Time)", "Daily SKU Sales"], horizontal=True)
-        if view == "Aggregate (All Time)":
+        view = st.radio("View", ["Aggregate", "Daily"], horizontal=True)
+        if view == "Aggregate":
             s_sales = orders['Seller SKU ID'].value_counts().reset_index(name='Sales')
             s_sales.columns = ['SELLER SKU', 'Sales']
-            
-            if not rtv_all.empty:
-                s_ret = rtv_all[rtv_all['Status']=='Matched']['SELLER SKU'].value_counts().reset_index(name='Returns')
-                s_ret.columns = ['SELLER SKU', 'Returns']
-            else:
-                s_ret = pd.DataFrame(columns=['SELLER SKU', 'Returns'])
-                
+            s_ret = rtv_all[rtv_all['Status']=='Matched']['SELLER SKU'].value_counts().reset_index(name='Returns') if not rtv_all.empty else pd.DataFrame(columns=['SELLER SKU', 'Returns'])
+            s_ret.columns = ['SELLER SKU', 'Returns']
             s_stats = pd.merge(s_ret, s_sales, on='SELLER SKU', how='left').fillna(0)
             st.dataframe(s_stats.sort_values('Sales', ascending=False), use_container_width=True)
-            
         else:
-            d = st.date_input("Select SKU Date", datetime.now())
+            d = st.date_input("SKU Date", datetime.now())
             do = orders[orders['Date'].dt.date == d]
-            if not do.empty:
-                st.dataframe(do['Seller SKU ID'].value_counts(), use_container_width=True)
-            else:
-                st.warning("No orders on this date.")
+            if not do.empty: st.dataframe(do['Seller SKU ID'].value_counts(), use_container_width=True)
     else:
-        st.info("Upload Order files to see SKU data.")
+        st.info("Upload Orders first.")
 
 # 6. Data Management
 with t5:
-    st.header("🗂️ Manage Uploaded Data")
-    tab = st.selectbox("Select Dataset", ["scans", "rtv", "orders"])
-    
+    st.header("🗂️ Manage Data")
+    tab = st.selectbox("Select Tab", ["scans", "rtv", "orders"])
     if st.button("🔄 Refresh Data"):
         st.cache_data.clear()
         st.rerun()
     
     st.markdown("---")
-    st.write("Delete data by Upload Date (YYYY-MM-DD):")
-    date_d = st.text_input("Enter Date", placeholder="2026-01-31")
-    
+    date_d = st.text_input("Date to Delete (YYYY-MM-DD)")
     if st.button("🗑️ Delete Data"):
         if date_d:
             delete_by_date_sheet(tab, date_d)
             st.cache_data.clear()
             time.sleep(1)
             st.rerun()
-        else:
-            st.error("Please enter a date.")
