@@ -1,7 +1,7 @@
 import streamlit as st
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from datetime import datetime
+from datetime import datetime, timedelta
 import pandas as pd
 
 # ૧. Google Sheets કનેક્શન સેટઅપ
@@ -37,12 +37,12 @@ if page == "📤 Dispatch Scan":
         else:
             c1, c2 = st.columns(2)
             with c1:
-                if st.button("✅ Confirm Dispatch", use_container_width=True):
+                if st.button("✅ Confirm Dispatch"):
                     sheet1.append_row([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), awb_input, "Auto", "Dispatched"])
                     st.success("સેવ થઈ ગયું!")
                     st.rerun()
             with c2:
-                if st.button("🚩 Soft Data Issue", use_container_width=True):
+                if st.button("🚩 Soft Data Issue"):
                     sheet1.append_row([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), awb_input, "Auto", "Soft Data Issue"])
                     st.warning("સોફ્ટ ડેટામાં મુકાયું.")
                     st.rerun()
@@ -72,6 +72,7 @@ elif page == "📊 Dashboard & Audit":
                 st.rerun()
 
         if not master_df.empty:
+            # સ્ટેટસ નક્કી કરવું
             if not user_df.empty:
                 latest_status = user_df.sort_values('Date').groupby('AWB').tail(1)
                 status_dict = dict(zip(latest_status['AWB'].astype(str), latest_status['Status']))
