@@ -1,7 +1,7 @@
 import streamlit as st
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from datetime import datetime, timedelta
+from datetime import datetime
 import pandas as pd
 
 # ૧. Google Sheets કનેક્શન સેટઅપ
@@ -17,32 +17,36 @@ def connect_to_google():
 
 spreadsheet = connect_to_google()
 
-# પેજ સેટઅપ
-st.set_page_config(page_title="Crown Threads ERP", layout="wide")
+# પેજ સેટઅપ - મોબાઈલ માટે પ્લીઝ layout="centered" રાખવું જેથી બધું લાઈનમાં દેખાય
+st.set_page_config(page_title="Crown Threads ERP", layout="centered")
+
 st.sidebar.title("💎 Crown Threads ERP")
 page = st.sidebar.radio("મેનુ પસંદ કરો", ["📤 Dispatch Scan", "📊 Dashboard & Audit"])
 
 # --- PAGE 1: DISPATCH SCAN ---
 if page == "📤 Dispatch Scan":
     st.title("📤 Dispatch Scanning")
-    awb_input = st.text_input("Order ID સ્કેન કરો", placeholder="બારકોડ સ્કેનર વાપરો...")
+    
+    # મોબાઈલ કેમેરા સ્કેનર માટે ટિપ્સ
+    st.info("💡 ટિપ: નીચેના બોક્સ પર ક્લિક કરો, પછી તમારા કીબોર્ડમાં રહેલા કેમેરા આઈકોનથી સ્કેન કરો.")
+    
+    awb_input = st.text_input("Order ID સ્કેન કરો", key="barcode_input")
     
     if awb_input:
         sheet1 = spreadsheet.worksheet("Sheet1")
         user_df = pd.DataFrame(sheet1.get_all_records())
         
-        # Duplicate Check
         if not user_df.empty and str(awb_input) in user_df['AWB'].astype(str).values:
             st.error(f"🚨 RED ALERT: ઓર્ડર {awb_input} પહેલાથી સ્કેન થયેલો છે!")
         else:
             c1, c2 = st.columns(2)
             with c1:
-                if st.button("✅ Confirm Dispatch"):
+                if st.button("✅ Confirm Dispatch", use_container_width=True):
                     sheet1.append_row([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), awb_input, "Auto", "Dispatched"])
                     st.success("સેવ થઈ ગયું!")
                     st.rerun()
             with c2:
-                if st.button("🚩 Soft Data Issue"):
+                if st.button("🚩 Soft Data Issue", use_container_width=True):
                     sheet1.append_row([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), awb_input, "Auto", "Soft Data Issue"])
                     st.warning("સોફ્ટ ડેટામાં મુકાયું.")
                     st.rerun()
@@ -55,13 +59,10 @@ elif page == "📊 Dashboard & Audit":
         master_sheet = spreadsheet.worksheet("Ajio_Master_List")
         dispatch_sheet = spreadsheet.worksheet("Sheet1")
         
-        master_df = pd.DataFrame(master_sheet.get_all_records())
-        user_df = pd.DataFrame(dispatch_sheet.get_all_records())
-        
-        # ફાઇલ અપલોડ સેક્શન
-        with st.expander("📁 સવારે નવી ફાઇલ અહીં અપલોડ કરો"):
-            uploaded_file = st.file_uploader("Ajio Excel", type=['xlsx'])
-            if uploaded_file and st.button("ક્લાઉડમાં ઓર્ડર સેવ કરો"):
+        # મોબાઈલમાં આ સેક્શન સીધું જ ખુલ્લું રાખવા માટે expanded=True કર્યું છે
+        with st.expander("📁 સવારે નવી ફાઇલ અહીં અપલોડ કરો", expanded=True):
+            uploaded_file = st.file_uploader("Ajio Excel પસંદ કરો", type=['xlsx'])
+            if uploaded_file and st.button("ક્લાઉડમાં ઓર્ડર સેવ કરો", use_container_width=True):
                 df_raw = pd.read_excel(uploaded_file, sheet_name='Order Details', header=None)
                 header_row = next((i for i, row in df_raw.iterrows() if 'Customer Order Id' in row.values), None)
                 ajio_df = pd.read_excel(uploaded_file, sheet_name='Order Details', skiprows=header_row)
@@ -71,8 +72,10 @@ elif page == "📊 Dashboard & Audit":
                 st.success("ઓર્ડર સેવ થયા!")
                 st.rerun()
 
+        master_df = pd.DataFrame(master_sheet.get_all_records())
+        user_df = pd.DataFrame(dispatch_sheet.get_all_records())
+
         if not master_df.empty:
-            # સ્ટેટસ નક્કી કરવું
             if not user_df.empty:
                 latest_status = user_df.sort_values('Date').groupby('AWB').tail(1)
                 status_dict = dict(zip(latest_status['AWB'].astype(str), latest_status['Status']))
@@ -81,24 +84,18 @@ elif page == "📊 Dashboard & Audit":
 
             master_df['Live_Status'] = master_df['Customer Order Id'].apply(lambda x: status_dict.get(str(x), '❌ Pending'))
 
-            # ફિલ્ટરિંગ
             pending_df = master_df[master_df['Live_Status'] == '❌ Pending']
             dispatched_df = master_df[master_df['Live_Status'] == 'Dispatched']
             soft_data_df = master_df[master_df['Live_Status'] == 'Soft Data Issue']
 
-            # Metrics
             st.divider()
-            col1, col2, col3 = st.columns(3)
-            col1.metric("📦 કુલ બાકી", len(pending_df))
-            col2.metric("✅ ડિસ્પેચ થયેલા", len(dispatched_df))
-            col3.metric("🚩 સોફ્ટ ડેટા ઈશ્યુ", len(soft_data_df))
+            # મોબાઈલમાં મેટ્રિક્સ એકબીજાની નીચે આવશે
+            st.metric("📦 કુલ બાકી", len(pending_df))
+            st.metric("✅ ડિસ્પેચ થયેલા", len(dispatched_df))
+            st.metric("🚩 સોફ્ટ ડેટા ઈશ્યુ", len(soft_data_df))
             st.divider()
 
-            # Tables
-            tab1, tab2, tab3 = st.tabs(["❌ Pending List", "🚩 Soft Data List", "✅ Dispatched List"])
-            with tab1:
-                st.dataframe(pending_df[['Upload_Date', 'Customer Order Id', 'Live_Status']], use_container_width=True)
-            with tab2:
-                st.dataframe(soft_data_df[['Upload_Date', 'Customer Order Id', 'Live_Status']], use_container_width=True)
-            with tab3:
-                st.dataframe(dispatched_df[['Upload_Date', 'Customer Order Id', 'Live_Status']], use_container_width=True)
+            tab1, tab2, tab3 = st.tabs(["Pending", "Soft Data", "Done"])
+            with tab1: st.dataframe(pending_df[['Customer Order Id', 'Live_Status']], use_container_width=True)
+            with tab2: st.dataframe(soft_data_df[['Customer Order Id', 'Live_Status']], use_container_width=True)
+            with tab3: st.dataframe(dispatched_df[['Customer Order Id', 'Live_Status']], use_container_width=True)
